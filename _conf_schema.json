@@ -1,0 +1,36 @@
+{
+  "proxy": {
+    "type": "string",
+    "default": "",
+    "description": "网络代理",
+    "hint": "留空不设置插件专用代理；如需设置，仅使用自己的可信代理"
+  },
+  "poll_interval_seconds": {
+    "type": "int",
+    "default": 300,
+    "description": "新对局轮询间隔（秒）",
+    "hint": "建议 300 秒以上，太频繁可能触发森空岛风控；最低 120 秒"
+  },
+  "max_push_per_round": {
+    "type": "int",
+    "default": 3,
+    "description": "每轮最多补播几局",
+    "hint": "一次轮询发现多局新战绩时，最多播报几条（按时间顺序）"
+  },
+  "push_enabled_default": {
+    "type": "bool",
+    "default": false,
+    "description": "绑定后默认开启私聊新对局播报（只发本人，不自动发群）"
+  },
+  "qr_timeout_seconds": {
+    "type": "int",
+    "default": 100,
+    "description": "扫码绑定二维码有效期（秒）"
+  },
+  "admin_ids": {
+    "type": "string",
+    "default": "",
+    "description": "管理员用户ID（可用 /卫戍 查 他人战绩）",
+    "hint": "仅白名单用户可私聊查询他人战绩；填可信管理员 sender_id，多个用英文逗号分隔，留空不授权"
+  }
+}

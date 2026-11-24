@@ -1,0 +1,11 @@
+name: astrbot_plugin_weizhu
+display_name: 卫戍协议助手
+desc: 群聊提供森空岛绑定入口、支持 QQ 临时私聊扫码绑定、查询卫戍战绩并按需播报
+version: v1.2.1
+author: 授权信息见 LICENSE
+astrbot_version: ">=4.10.0"
+tags:
+  - 明日方舟
+  - 卫戍协议
+  - 森空岛
+  - 战绩查询
