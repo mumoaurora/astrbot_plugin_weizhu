@@ -5,6 +5,7 @@
 - 盟约图标（白色单色，按金色着色）
 - 分队头像（干员立绘）
 """
+import hashlib
 import os
 from collections import Counter
 from datetime import datetime
@@ -17,7 +18,7 @@ except ImportError:
     from insights import active_layers, rankings
 
 import httpx
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageDraw, ImageFont, ImageOps
 
 # Keep the Chinese glyphs available in headless Linux containers as well as Windows.
 FONT_PATH = Path(__file__).resolve().parent / "fonts" / "NotoSansSC.ttf"
@@ -130,6 +131,22 @@ def _tint(img, color):
     return solid
 
 
+def equipment_asset_name(url):
+    return "equipment_" + hashlib.sha256(url.encode()).hexdigest()
+
+
+def equipment_icons(icon, quality):
+    if not icon:
+        return ()
+    if (
+        quality == "精锐"
+        and icon.startswith("https://web.hycdn.cn/arknights/game/assets/char_skill/sktok_")
+        and icon.endswith("_1.png")
+    ):
+        return (icon.removesuffix("_1.png") + "_2.png", icon)
+    return (icon,)
+
+
 class WeizhuRenderer:
     def __init__(self, data_dir: str, proxy: str = ""):
         self.data_dir = data_dir
@@ -208,7 +225,7 @@ class WeizhuRenderer:
     def squad(self, record) -> list:
         return record.get("chessSquad") or []
 
-    def equipment_names(self, member, info):
+    def squad_equipment(self, member, info):
         """Read only this squad slot; repeated equipment is not deduplicated."""
         empty = False
         for owner in (member, info):
@@ -219,7 +236,7 @@ class WeizhuRenderer:
                 if not slots:
                     empty = True
                     continue
-                names = []
+                equipment = []
                 for slot in slots:
                     if isinstance(slot, dict):
                         eid = slot.get("itemId") or slot.get("equipId") or slot.get("id")
@@ -228,13 +245,29 @@ class WeizhuRenderer:
                         eid, label = slot, None
                     else:
                         eid, label = None, None
-                    if isinstance(eid, (int, str)) and eid:
+                    quality = None
+                    icon = None
+                    if isinstance(eid, (int, str)) and not isinstance(eid, bool) and eid:
                         eid = str(eid)
-                        label = (self.items.get(eid) or {}).get("name") or label or eid
+                        item = self.items.get(eid) or {}
+                        label = item.get("name") or label
+                        icon = item.get("iconUrl")
+                        if eid.startswith("chess_item_") and eid.endswith(("_e_a", "_e_b")):
+                            # Skland may list only the ordinary variant in the catalog.
+                            if eid.endswith("_e_b"):
+                                quality = "精锐"
+                                base = self.items.get(eid[:-1] + "a") or {}
+                                label = label or base.get("name")
+                                icon = icon or base.get("iconUrl")
+                            elif eid == "chess_item_6_12_e_a":  # V3_1 天马之耀 is already golden.
+                                quality = "精锐"
+                            else:
+                                quality = "普通"
+                        label = label or eid
                     if isinstance(label, str) and label.strip():
-                        names.append(label.strip())
-                if names:
-                    return names, "已记录"
+                        equipment.append((label.strip(), quality, equipment_icons(icon, quality)))
+                if equipment:
+                    return equipment, "已记录"
         return [], "装备列表为空" if empty else "无可读装备数据"
 
     def squad_members(self, record) -> list:
@@ -243,7 +276,7 @@ class WeizhuRenderer:
             info = q.get("chessInfo") or {}
             cid = info.get("charId") or q.get("charId") or ""
             char = self.chars.get(cid) or {}
-            equips, equip_status = self.equipment_names(q, info)
+            equips, equip_status = self.squad_equipment(q, info)
             # 卫戍的干员等级/精英化以「合成等级(mergeLevel)」对应的 traits 为准（官方卡片逻辑）
             try:
                 merge_level = int(q.get("mergeLevel") or 0)
@@ -304,7 +337,7 @@ class WeizhuRenderer:
                 return httpx.AsyncClient(proxies=self.proxy, **kwargs)
         return httpx.AsyncClient(**kwargs)
 
-    async def prepare_assets(self, records) -> None:
+    async def prepare_assets(self, records, equipment_urls=()) -> None:
         need = {"season_bg": self.season_bg_url, "season_logo": self.season_logo_url}
         for r in records:
             for b in r.get("bondInfo") or []:
@@ -314,6 +347,7 @@ class WeizhuRenderer:
             band = r.get("bandId")
             if band:
                 need[f"band_{band}"] = (self.strategies.get(band) or {}).get("iconUrl") or ""
+        need.update((equipment_asset_name(url), url) for url in equipment_urls)
         todo = {
             k: (v, os.path.join(self.assets_dir, k + (".jpg" if k == "season_bg" else ".png")))
             for k, v in need.items()
@@ -325,6 +359,7 @@ class WeizhuRenderer:
         try:
             for name, (url, path) in list(todo.items())[:60]:
                 await self._fetch(client, url, path)
+                self._img_cache.pop(path, None)
         finally:
             await client.aclose()
 
@@ -629,10 +664,11 @@ class WeizhuRenderer:
     async def render_match_card(self, player, record, out_path, resource=None) -> str:
         if resource is not None:
             self.set_resource(resource)
-        await self.prepare_assets([record])
+        members = self.squad_members(record)
+        equipment_urls = {url for member in members for _, _, urls in member["equips"] for url in urls}
+        await self.prepare_assets([record], sorted(equipment_urls))
         await self.prepare_player_avatar()
         await self.prepare_avatars([record], force=True)
-        members = self.squad_members(record)
         bonds = self.active_bonds(record)
         bosses = record.get("acBossInfo") or []
         events = record.get("events") or []
@@ -642,7 +678,8 @@ class WeizhuRenderer:
         width = 1200
         bond_rows_n = ((len(bonds) + 3) // 4) if bonds else 1
         height = 172 + 100 + 22 + 2 * 104 + 22 + 96
-        squad_pitch = max(150, 106 + 24 * max((len(m["equips"]) for m in members), default=0))
+        equipment_pitch = 36 if equipment_urls else 24
+        squad_pitch = max(150, 106 + equipment_pitch * max((len(m["equips"]) for m in members), default=0))
         height += 44 + squad_rows * squad_pitch + 10
         height += 44 + 48 * bond_rows_n + 14
         if bosses:
@@ -745,13 +782,27 @@ class WeizhuRenderer:
             if tier > 0:
                 stars = "★" * min(6, tier)
                 draw.text((cx + 84, cy + 46), stars, font=font(12), fill=GOLD)
-            lines = m["equips"] or [m["equip_status"]]
-            for j, equipment in enumerate(lines):
-                ey = cy + 78 + 24 * j
-                draw.rounded_rectangle((cx, ey, cx + 203, ey + 22), 4, fill=PANEL2)
-                label = "装备 · " + equipment if m["equips"] else equipment
-                draw.text((cx + 5, ey + 1), cut(draw, label, font(15), 193),
-                          font=font(15), fill=TEAL if m["equips"] else DIM)
+            lines = m["equips"] or [(m["equip_status"], None, ())]
+            for j, (name, quality, urls) in enumerate(lines):
+                ey = cy + 78 + equipment_pitch * j
+                elite = quality == "精锐"
+                draw.rounded_rectangle(
+                    (cx, ey, cx + 203, ey + equipment_pitch - 2), 4,
+                    fill=BORDER_HI if elite else PANEL2,
+                    outline=GOLD if elite else None,
+                )
+                for url in urls:
+                    icon = self._asset(equipment_asset_name(url))
+                    if icon is not None:
+                        icon = ImageOps.contain(icon, (30, 30))
+                        img.paste(icon, (cx + 3, ey + 2), icon)
+                        break
+                label = f"{quality or '装备'} · {name}" if m["equips"] else name
+                color = GOLD_HI if elite else TEAL if m["equips"] else DIM
+                inset = 39 if urls else 5
+                draw.text((cx + inset, ey + (equipment_pitch - 22) // 2 + 1),
+                          cut(draw, label, font(15), 198 - inset),
+                          font=font(15), fill=color)
         y += squad_rows * squad_pitch + 10
 
         self._section(draw, y, "本局盟约", f"{len(bonds)} 个激活")
