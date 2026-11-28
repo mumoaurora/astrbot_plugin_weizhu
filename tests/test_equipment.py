@@ -1,5 +1,8 @@
 import asyncio
-from PIL import ImageDraw
+from io import BytesIO
+
+import httpx
+from PIL import Image, ImageDraw
 from astrbot_plugin_weizhu.renderer import GOLD_HI, TEAL, WeizhuRenderer
 
 
@@ -24,13 +27,26 @@ def test_equipment_card(tmp_path, monkeypatch):
 def test_equipment_card_distinguishes_normal_and_elite(tmp_path, monkeypatch):
     renderer = WeizhuRenderer(str(tmp_path))
     labels = {}
+    positions = {}
     draw_text = ImageDraw.ImageDraw.text
 
     def capture(draw, xy, text, *args, **kwargs):
         labels[text] = kwargs.get("fill")
+        positions[text] = xy
         return draw_text(draw, xy, text, *args, **kwargs)
 
     monkeypatch.setattr(ImageDraw.ImageDraw, "text", capture)
+    gray, gold = (100, 100, 100), (195, 139, 42)
+    urls = []
+
+    def serve_icon(request):
+        urls.append(request.url.path)
+        buffer = BytesIO()
+        color = gold if request.url.path.endswith("_2.png") else gray
+        Image.new("RGB", (128, 128), color).save(buffer, format="PNG")
+        return httpx.Response(200, content=buffer.getvalue())
+
+    monkeypatch.setattr(renderer, "_http_client", lambda: httpx.AsyncClient(transport=httpx.MockTransport(serve_icon)))
     record = {
         "chessSquad": [
             {"equips": [{"equipId": "chess_item_1_01_e_a"}, {"equipId": "chess_item_1_01_e_b"}]},
@@ -39,7 +55,8 @@ def test_equipment_card_distinguishes_normal_and_elite(tmp_path, monkeypatch):
     }
     resource = {
         "items": [
-            {"itemId": "chess_item_1_01_e_a", "name": "维式重锤"},
+            {"itemId": "chess_item_1_01_e_a", "name": "维式重锤",
+             "iconUrl": "https://web.hycdn.cn/arknights/game/assets/char_skill/sktok_acarm041_1.png"},
             {"itemId": "chess_item_1_02_e_a", "name": "测试基础名"},
             {"itemId": "chess_item_1_02_e_b", "name": "坚守盾牌"},
             {"itemId": "chess_item_6_12_e_a", "name": "天马之耀"},
@@ -50,3 +67,8 @@ def test_equipment_card_distinguishes_normal_and_elite(tmp_path, monkeypatch):
     assert labels["精锐 · 维式重锤"] == GOLD_HI
     assert labels["精锐 · 坚守盾牌"] == GOLD_HI
     assert labels["精锐 · 天马之耀"] == GOLD_HI
+    assert [url.rsplit("/", 1)[-1] for url in urls] == ["sktok_acarm041_1.png", "sktok_acarm041_2.png"]
+    with Image.open(tmp_path / "match.png") as card:
+        for label, color in (("普通 · 维式重锤", gray), ("精锐 · 维式重锤", gold)):
+            x, y = positions[label]
+            assert card.getpixel((x - 22, y + 8)) == color
