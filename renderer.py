@@ -208,7 +208,7 @@ class WeizhuRenderer:
     def squad(self, record) -> list:
         return record.get("chessSquad") or []
 
-    def equipment_names(self, member, info):
+    def squad_equipment(self, member, info):
         """Read only this squad slot; repeated equipment is not deduplicated."""
         empty = False
         for owner in (member, info):
@@ -219,7 +219,7 @@ class WeizhuRenderer:
                 if not slots:
                     empty = True
                     continue
-                names = []
+                equipment = []
                 for slot in slots:
                     if isinstance(slot, dict):
                         eid = slot.get("itemId") or slot.get("equipId") or slot.get("id")
@@ -228,13 +228,25 @@ class WeizhuRenderer:
                         eid, label = slot, None
                     else:
                         eid, label = None, None
-                    if isinstance(eid, (int, str)) and eid:
+                    quality = None
+                    if isinstance(eid, (int, str)) and not isinstance(eid, bool) and eid:
                         eid = str(eid)
-                        label = (self.items.get(eid) or {}).get("name") or label or eid
+                        item = self.items.get(eid) or {}
+                        label = item.get("name") or label
+                        if eid.startswith("chess_item_") and eid.endswith(("_e_a", "_e_b")):
+                            # Skland may list only the ordinary variant in the catalog.
+                            if eid.endswith("_e_b"):
+                                quality = "精锐"
+                                label = label or (self.items.get(eid[:-1] + "a") or {}).get("name")
+                            elif eid == "chess_item_6_12_e_a":  # V3_1 天马之耀 is already golden.
+                                quality = "精锐"
+                            else:
+                                quality = "普通"
+                        label = label or eid
                     if isinstance(label, str) and label.strip():
-                        names.append(label.strip())
-                if names:
-                    return names, "已记录"
+                        equipment.append((label.strip(), quality))
+                if equipment:
+                    return equipment, "已记录"
         return [], "装备列表为空" if empty else "无可读装备数据"
 
     def squad_members(self, record) -> list:
@@ -243,7 +255,7 @@ class WeizhuRenderer:
             info = q.get("chessInfo") or {}
             cid = info.get("charId") or q.get("charId") or ""
             char = self.chars.get(cid) or {}
-            equips, equip_status = self.equipment_names(q, info)
+            equips, equip_status = self.squad_equipment(q, info)
             # 卫戍的干员等级/精英化以「合成等级(mergeLevel)」对应的 traits 为准（官方卡片逻辑）
             try:
                 merge_level = int(q.get("mergeLevel") or 0)
@@ -745,13 +757,14 @@ class WeizhuRenderer:
             if tier > 0:
                 stars = "★" * min(6, tier)
                 draw.text((cx + 84, cy + 46), stars, font=font(12), fill=GOLD)
-            lines = m["equips"] or [m["equip_status"]]
-            for j, equipment in enumerate(lines):
+            lines = m["equips"] or [(m["equip_status"], None)]
+            for j, (name, quality) in enumerate(lines):
                 ey = cy + 78 + 24 * j
                 draw.rounded_rectangle((cx, ey, cx + 203, ey + 22), 4, fill=PANEL2)
-                label = "装备 · " + equipment if m["equips"] else equipment
+                label = f"{quality or '装备'} · {name}" if m["equips"] else name
+                color = GOLD_HI if quality == "精锐" else TEAL if m["equips"] else DIM
                 draw.text((cx + 5, ey + 1), cut(draw, label, font(15), 193),
-                          font=font(15), fill=TEAL if m["equips"] else DIM)
+                          font=font(15), fill=color)
         y += squad_rows * squad_pitch + 10
 
         self._section(draw, y, "本局盟约", f"{len(bonds)} 个激活")
